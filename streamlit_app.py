@@ -1,53 +1,77 @@
 import streamlit as st
+import openai
 from openai import OpenAI
 
-# Show title and description.
-st.title("📄 Document question answering")
-st.write(
-    "Upload a document below and ask a question about it – GPT will answer! "
-    "To use this app, you need to provide an OpenAI API key, which you can get [here](https://platform.openai.com/account/api-keys). "
-)
+# Initialize the OpenAI client
+client = OpenAI()
 
-# Ask user for their OpenAI API key via `st.text_input`.
-# Alternatively, you can store the API key in `./.streamlit/secrets.toml` and access it
-# via `st.secrets`, see https://docs.streamlit.io/develop/concepts/connections/secrets-management
-openai_api_key = st.text_input("OpenAI API Key", type="password")
-if not openai_api_key:
-    st.info("Please add your OpenAI API key to continue.", icon="🗝️")
-else:
+# Streamlit UI for user to upload file and ask questions
+st.title("Legal Document Q&A")
 
-    # Create an OpenAI client.
-    client = OpenAI(api_key=openai_api_key)
+uploaded_files = st.file_uploader("Upload PDF files", type="pdf", accept_multiple_files=True)
+question = st.text_input("Ask a question about the documents")
 
-    # Let the user upload a file via `st.file_uploader`.
-    uploaded_file = st.file_uploader(
-        "Upload a document (.txt or .md)", type=("txt", "md")
+if uploaded_files and question:
+    # Ready the files for upload to OpenAI
+    file_streams = uploaded_files
+
+    # Create a vector store
+    vector_store = client.beta.vector_stores.create(name="User Uploaded Documents")
+
+    # Upload files and poll status
+    file_batch = client.beta.vector_stores.file_batches.upload_and_poll(
+        vector_store_id=vector_store.id, files=file_streams
     )
 
-    # Ask the user for a question via `st.text_area`.
-    question = st.text_area(
-        "Now ask a question about the document!",
-        placeholder="Can you give me a short summary?",
-        disabled=not uploaded_file,
-    )
+    # Check the status
+    if file_batch.status == 'completed':
+        st.write("Files uploaded successfully and added to the vector store.")
 
-    if uploaded_file and question:
-
-        # Process the uploaded file and question.
-        document = uploaded_file.read().decode()
-        messages = [
-            {
-                "role": "user",
-                "content": f"Here's a document: {document} \n\n---\n\n {question}",
-            }
-        ]
-
-        # Generate an answer using the OpenAI API.
-        stream = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=messages,
-            stream=True,
+        # Create an assistant to answer the question
+        assistant = client.beta.assistants.create(
+            name="Legal Analyst",
+            instructions="You are a world class legal analyst.",
+            tools=[{"type": "file_search"}],
+            model="gpt-4o",
         )
 
-        # Stream the response to the app using `st.write_stream`.
-        st.write_stream(stream)
+        # Update the assistant to use the vector store
+        assistant = client.beta.assistants.update(
+            assistant_id=assistant.id,
+            tool_resources={"file_search": {"vector_store_ids": [vector_store.id]}},
+        )
+
+        # Upload the user provided files to OpenAI for further analysis
+        message_files = [
+            client.files.create(file=file, purpose="assistants") for file in uploaded_files
+        ]
+
+        # Create a thread and attach the files to the message
+        thread = client.beta.threads.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": question,
+                    "attachments": [
+                        {"file_id": message_file.id, "tools": [{"type": "file_search"}]} for message_file in message_files
+                    ],
+                }
+            ]
+        )
+
+        # Run the assistant and get the response
+        run = client.beta.threads.runs.create_and_poll(
+            thread_id=thread.id, assistant_id=assistant.id
+        )
+
+        # Retrieve the messages from the thread
+        messages = list(client.beta.threads.messages.list(thread_id=thread.id, run_id=run.id))
+
+        # Display the response to the user
+        if messages:
+            message_content = messages[0].content[0].text
+            st.write("Answer:", message_content)
+        else:
+            st.write("No response available from the assistant.")
+    else:
+        st.write("Error uploading the files. Please try again.")

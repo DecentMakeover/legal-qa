@@ -1,18 +1,17 @@
-##### File 1: upload_and_index.py #####
 import streamlit as st
 import openai
 from openai import OpenAI
-
+count = 0
 # Initialize the OpenAI client
 client = OpenAI()
 
-# Streamlit UI for user to upload file and index it
-st.title("Legal Document Upload and Indexing")
+# Streamlit UI for user to upload file and ask questions
+st.title("Legal Document Q&A")
 
-# File upload section
 uploaded_files = st.file_uploader("Upload PDF files", type="pdf", accept_multiple_files=True)
+question = st.text_input("Ask a question about the documents")
 
-if uploaded_files:
+if uploaded_files and question:
     # Ready the files for upload to OpenAI
     file_streams = uploaded_files
 
@@ -28,7 +27,7 @@ if uploaded_files:
     if file_batch.status == 'completed':
         st.write("Files uploaded successfully and added to the vector store.")
 
-        # Create an assistant to answer questions
+        # Create an assistant to answer the question
         assistant = client.beta.assistants.create(
             name="Legal Analyst",
             instructions="You are a world class legal analyst.",
@@ -42,9 +41,39 @@ if uploaded_files:
             tool_resources={"file_search": {"vector_store_ids": [vector_store.id]}},
         )
 
-        # Save vector store and assistant ID for future use
-        st.session_state.vector_store_id = vector_store.id
-        st.session_state.assistant_id = assistant.id
-        st.write("Vector store and assistant created successfully. You can now proceed to ask questions.")
+        # Upload the user provided files to OpenAI for further analysis
+        message_files = [
+            client.files.create(file=file, purpose="assistants") for file in uploaded_files
+        ]
+
+        # Create a thread and attach the files to the message
+        thread = client.beta.threads.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": question,
+                    "attachments": [
+                        {"file_id": message_file.id, "tools": [{"type": "file_search"}]} for message_file in message_files
+                    ],
+                }
+            ]
+        )
+
+        # Run the assistant and get the response
+        run = client.beta.threads.runs.create_and_poll(
+            thread_id=thread.id, assistant_id=assistant.id
+        )
+
+        # Retrieve the messages from the thread
+        messages = list(client.beta.threads.messages.list(thread_id=thread.id, run_id=run.id))
+
+        # Display the response to the user
+        if messages:
+            message_content = messages[0].content[0].text if isinstance(messages[0].content, list) else messages[0].content
+            st.write(message_content)
+            print(count)
+            count+=1
+        else:
+            st.write("No response available from the assistant.")
     else:
         st.write("Error uploading the files. Please try again.")

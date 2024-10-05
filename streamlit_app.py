@@ -70,8 +70,7 @@ if uploaded_files and question:
         # Display the response to the user
         if messages:
             message_content = messages[0].content[0].text if isinstance(messages[0].content, list) else messages[0].content
-            st.write("Answer:")
-            st.json(message_content.value)
+            st.write(message_content.value)
         else:
             st.write("No response available from the assistant.")
     else:
